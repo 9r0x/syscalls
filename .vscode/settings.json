@@ -1,0 +1,7 @@
+{
+  "files.associations": {
+    "*.rmd": "markdown",
+    "uthread_ctx.h": "c",
+    "syscall.h": "c"
+  }
+}
