@@ -1,5 +1,8 @@
 commands.gdb
 .gdb_history
+sysfilter/
+bin/
+calls/
 
 # normal build system output
 disk0.img

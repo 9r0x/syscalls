@@ -11,11 +11,11 @@ IFLAGS		=
 LFLAGS		= -L. -Wl,--rpath,.
 LIBS		= -ldl
 
-.PHONY: all cscope clean
+.PHONY: all cscope clean print
 
 all: cscope $(TARGET) $(EXECS)
 	for exec in $(EXECS); do \
-		$(CC) $(CFLAGS) $(LFLAGS) -o `basename $$exec .o` $$exec -lfilter; \
+		$(CC) $(CFLAGS) $(LFLAGS) -o bin/`basename $$exec .o` $$exec -lfilter; \
 	done \
 
 $(TARGET): $(OFILES)
@@ -23,6 +23,9 @@ $(TARGET): $(OFILES)
 
 %.o: %.c
 	$(CC) $(CFLAGS) $(IFLAGS) -c $< -o $@
+
+print:
+	$(CC) -g simple_printf.c -o bin/simple_printf
 
 clean:
 	rm -f $(TARGET) *.o
