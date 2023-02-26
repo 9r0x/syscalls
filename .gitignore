@@ -26,3 +26,6 @@ cmake-build-debug/*
 **.DS_Store
 
 **.log
+
+# Tools
+sysfilter_extract
