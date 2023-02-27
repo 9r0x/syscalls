@@ -6,19 +6,19 @@
       "type": "cppdbg",
       "request": "launch",
       "preLaunchTask": "Build",
-      "program": "${workspaceFolder}/test",
+      "program": "${workspaceFolder}/bin/test",
       "cwd": "${workspaceFolder}",
-      "MIMode": "lldb",
+      "MIMode": "gdb",
       "stopAtEntry": true,
       "setupCommands": [
         {
-          "description": "Enable pretty-printing for lldb",
+          "description": "Enable pretty-printing for gdb",
           "text": "-enable-pretty-printing",
           "ignoreFailures": true
         },
         {
           "description": "Set Disassembly Flavor to at&t",
-          "text": "-lldb-set disassembly-flavor \"att\"",
+          "text": "-gdb-set disassembly-flavor \"att\"",
           "ignoreFailures": true
         }
       ]

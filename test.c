@@ -7,29 +7,29 @@
 #include <stdlib.h>
 #include <errno.h>
 #include <sys/prctl.h>
+#include <sys/utsname.h>
 
 #include "filter.h"
 
-void no_block_test()
+void no_block_test(void)
 {
     printf("\nTest 1: no filter\n");
-    // _NR is Numeric Reference
+    /* [SN-2023-02-22] _NR is Numeric Reference */
     syscall(SYS_write, 1, "Write 1\tallowed\n", 16);
     syscall(__NR_write, 1, "Write 2\tallowed\n", 16);
 }
 
-void *syscall_strict()
+void *syscall_strict(void *arg)
 {
     syscall(SYS_seccomp, SECCOMP_SET_MODE_STRICT, 0, NULL);
     printf(">Filters installed\n");
-    // write is allowed
     syscall(SYS_write, 1, "Write\tallowed\n", 14);
     syscall(SYS_time, 0);
     printf("Time\tallowed\n");
     return (void *)1;
 }
 
-void strict_test()
+void strict_test(void)
 {
     pthread_t t;
     void *ret;
@@ -45,18 +45,18 @@ void strict_test()
     // SIGSYS is sent, but not sure how it is handled...
     if (ret == 0)
         printf("Time\tblocked\n");
-    // now is allowed
+    /* [SN-2023-02-28] Write is allowed in original thread */
     printf(">Filters removed\n");
     int time = syscall(SYS_time, 0);
     printf("Time\tallowed: %d\n", time);
 }
 
 #define eno 99
-void basic_filter_test()
+void basic_filter_test(void)
 {
-    printf("\nTest 3: custom basic filter\n");
     int time;
-    // Before the filter is installed
+    printf("\nTest 3: custom basic filter\n");
+    /* [SN-2023-02-28] Before the filter is installed */
     time = syscall(SYS_time, 0);
     if (errno != eno)
         printf("Time\tallowed: %d\n", time);
@@ -65,18 +65,57 @@ void basic_filter_test()
 
     install_basic_filters(__NR_time, eno);
     printf(">Filters installed\n");
-    // After the filter is installed
+    /* [SN-2023-02-28] After the filter is installed */
     time = syscall(SYS_time, 0);
     if (errno != eno)
         printf("Time\tallowed: %d\n", time);
     else
         printf("Time\tblocked\n");
+    printf("\n");
+}
+
+#define N_SYSCALLS 512
+#define N_WORDS (N_SYSCALLS / BITS_PER_U32 + N_SYSCALLS % BITS_PER_U32)
+
+void avl_filter_test(void)
+{
+    int time;
+    struct utsname *buf = malloc(sizeof(struct utsname));
+    int a[] = {0, 1, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 20, 24, 25, 28, 32, 39, 41, 42, 44, 45, 47, 49, 51, 54, 60, 62, 72, 79, 96, 99, 186, 201, 202, 217, 228, 231, 234, 257, 262, 302};
+    int n = sizeof(a) / sizeof(int);
+    __u32 *b = array_to_bitmap(a, n, N_WORDS);
+    printf("\nTest 4: custom avl filter\n");
+
+    /* [SN-2023-02-28] Before the filter is installed */
+    syscall(SYS_uname, buf);
+    if (errno != eno)
+        printf("Uname(63)\tallowed: %s - %s\n", buf->sysname, buf->version);
+    else
+        printf("Uname(63)\tblocked\n");
+
+    printf(">Filters installed\n");
+    install_binary_search_filter(b, N_WORDS, eno);
+    /* [SN-2023-02-28] After the filter is installed */
+    syscall(SYS_write, 1, "Write\t\tallowed\n", 15);
+    time = syscall(SYS_time, 0);
+    if (errno != eno)
+        printf("Time(201)\tallowed: %d\n", time);
+    else
+        printf("Time(201)\tblocked\n");
+    syscall(SYS_uname, buf);
+    if (errno != eno)
+        printf("Uname(63)\tallowed: %s - %sn", buf->sysname, buf->version);
+    else
+        printf("Uname(63)\tblocked\n");
+    printf("\n");
 }
 
 int main(void)
 {
     no_block_test();
     strict_test();
-    basic_filter_test();
+    // basic_filter_test();
+    avl_filter_test();
+
     return 0;
 }
