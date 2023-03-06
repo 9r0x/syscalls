@@ -64,7 +64,7 @@ int *bitmap_to_array(__u32 *bitmap, int n_words, int *allowed)
 
 __u32 *array_to_bitmap(int *allowed, int n, int n_words)
 {
-    __u32 *bitmap = malloc(sizeof(__u32) * n_words);
+    __u32 *bitmap = calloc(n_words, sizeof(__u32));
     for (int i = 0; i < n; i++)
         bitmap[allowed[i] / BITS_PER_U32] |= 1 << (allowed[i] % BITS_PER_U32);
     return bitmap;
@@ -113,9 +113,8 @@ void preorder_avl(int arr[], int start, int end, syscall_node_t *result, int *in
     }
 }
 
-typedef struct sock_filter filter_t;
 /* [SN-2023-02-27] Left & right inclusive */
-void allowed_to_filters(int arr[], int start, int end, filter_t *filters, int *index, int n)
+void allowed_to_filters_helper(int arr[], int start, int end, filter_t *filters, int *index, int n)
 {
     int mid;
     int line2_index = *index + 1,
@@ -136,13 +135,13 @@ void allowed_to_filters(int arr[], int start, int end, filter_t *filters, int *i
     {
         /* [SN-2023-02-27] Left child exist */
         less_index = ++(*index);
-        allowed_to_filters(arr, start, mid - 1, filters, index, n);
+        allowed_to_filters_helper(arr, start, mid - 1, filters, index, n);
     }
     if (mid < end)
     {
         /* [SN-2023-02-27] Right child exist */
         greater_index = ++(*index);
-        allowed_to_filters(arr, mid + 1, end, filters, index, n);
+        allowed_to_filters_helper(arr, mid + 1, end, filters, index, n);
     }
 
     less_index = ((less_index == -1) ? block_index : less_index) - line2_index - 1;
@@ -152,11 +151,30 @@ void allowed_to_filters(int arr[], int start, int end, filter_t *filters, int *i
 
 /* [SN-2023-02-27] The number of instructions before the actual filters */
 #define N_PREINSTRUCTIONS 1
-void install_binary_search_filter(__u32 *allowed_bitmap, int n_words, int error)
+filter_t *allowed_to_filters(int allowed[], int n, int error)
+{
+    filter_t *filters = malloc(sizeof(filter_t) * (2 * n + 1));
+    int index = 0;
+    filters = (filter_t *)malloc(sizeof(filter_t) * (n * 2 + N_PREINSTRUCTIONS + 2));
+    filters[0] = (filter_t)BPF_STMT(BPF_LD | BPF_W | BPF_ABS, syscall_nr);
+    /* [SN-2023-02-27] Add more pre instructions here*/
+
+    /* [SN-2023-02-27] Allow and Block instruction */
+    filters[2 * n + N_PREINSTRUCTIONS] = (filter_t)BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW);
+    filters[2 * n + N_PREINSTRUCTIONS + 1] = (filter_t)BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | (error & SECCOMP_RET_DATA));
+
+    /* [SN-2023-02-27] Hide pre instructions */
+    filters += N_PREINSTRUCTIONS;
+    allowed_to_filters_helper(allowed, 0, n - 1, filters, &index, n);
+    /* [SN-2023-02-27] Unhide pre instructions */
+    filters -= N_PREINSTRUCTIONS;
+    return filters;
+}
+
+void install_avl_filter(__u32 *allowed_bitmap, int n_words, int error)
 {
     struct sock_fprog prog;
     filter_t *filters;
-    int index = 0;
     int n = bitmap_length(allowed_bitmap, n_words);
     printf(">>Number of allowed syscalls: %d\n", n);
     int *allowed = (int *)malloc(sizeof(int) * n);
@@ -176,20 +194,8 @@ void install_binary_search_filter(__u32 *allowed_bitmap, int n_words, int error)
             printf("%d\t%d\t%d\n", ordered[i].nr, ordered[i].left_index, ordered[i].right_index);
         free(ordered);
     */
-    index = 0;
-    filters = (filter_t *)malloc(sizeof(filter_t) * (n * 2 + N_PREINSTRUCTIONS + 2));
-    filters[0] = (filter_t)BPF_STMT(BPF_LD | BPF_W | BPF_ABS, syscall_nr);
-    /* [SN-2023-02-27] Add more pre instructions here*/
 
-    /* [SN-2023-02-27] Allow and Block instruction */
-    filters[2 * n + N_PREINSTRUCTIONS] = (filter_t)BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW);
-    filters[2 * n + N_PREINSTRUCTIONS + 1] = (filter_t)BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | (error & SECCOMP_RET_DATA));
-
-    /* [SN-2023-02-27] Hide pre instructions */
-    filters += N_PREINSTRUCTIONS;
-    allowed_to_filters(allowed, 0, n - 1, filters, &index, n);
-    /* [SN-2023-02-27] Unhide pre instructions */
-    filters -= N_PREINSTRUCTIONS;
+    filters = allowed_to_filters(allowed, n, error);
 
     /* [SN-2023-02-27] Install filters */
     prog = (struct sock_fprog){
@@ -204,4 +210,10 @@ void install_binary_search_filter(__u32 *allowed_bitmap, int n_words, int error)
     /* [SN-2023-02-27] Free heap allocation */
     free(filters);
     free(allowed);
+}
+
+__u32 *bpf_to_bitmap(filter_t *filters, int n_words)
+{
+    __u32 *bitmap = calloc(n_words, sizeof(__u32));
+    return bitmap;
 }

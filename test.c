@@ -1,5 +1,6 @@
 #include <linux/seccomp.h>
 #include <sys/syscall.h>
+#include <linux/filter.h>
 #include <unistd.h>
 #include <assert.h>
 #include <pthread.h>
@@ -94,7 +95,7 @@ void avl_filter_test(void)
         printf("Uname(63)\tblocked\n");
 
     printf(">Filters installed\n");
-    install_binary_search_filter(b, N_WORDS, eno);
+    install_avl_filter(b, N_WORDS, eno);
     /* [SN-2023-02-28] After the filter is installed */
     syscall(SYS_write, 1, "Write\t\tallowed\n", 15);
     time = syscall(SYS_time, 0);
@@ -110,12 +111,33 @@ void avl_filter_test(void)
     printf("\n");
 }
 
+void bpf_to_bitmap_test(void)
+{
+    printf("\nTest 5: bpf to bitmap\n");
+    int a[] = {0, 1, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 20, 24, 25, 28, 32, 39, 41, 42, 44, 45, 47, 49, 51, 54, 60, 62, 72, 79, 96, 99, 186, 201, 202, 217, 228, 231, 234, 257, 262, 302};
+    int n = sizeof(a) / sizeof(int);
+    __u32 *true_bitmap = array_to_bitmap(a, n, N_WORDS);
+
+    filter_t *f = allowed_to_filters(a, n, 99);
+    __u32 *extracted_bitmap = bpf_to_bitmap(f, N_WORDS);
+    /* [SN-2023-03-06] Compare two bitmaps */
+    for (int i = 0; i < N_WORDS; i++)
+    {
+        if (true_bitmap[i] != extracted_bitmap[i])
+        {
+            printf("Bitmaps are different at index %d", i);
+            exit(1);
+        }
+    }
+    printf("Bitmaps are the same");
+}
+
 int main(void)
 {
-    no_block_test();
-    strict_test();
+    // no_block_test();
+    // strict_test();
     // basic_filter_test();
     avl_filter_test();
-
+    // bpf_to_bitmap_test();
     return 0;
 }
