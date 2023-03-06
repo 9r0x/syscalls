@@ -114,13 +114,32 @@ void avl_filter_test(void)
 void bpf_to_bitmap_test(void)
 {
     printf("\nTest 5: bpf to bitmap\n");
+    /* [SN-2023-03-06] Step 1: creating a true bitmap */
     int a[] = {0, 1, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 20, 24, 25, 28, 32, 39, 41, 42, 44, 45, 47, 49, 51, 54, 60, 62, 72, 79, 96, 99, 186, 201, 202, 217, 228, 231, 234, 257, 262, 302};
     int n = sizeof(a) / sizeof(int);
     __u32 *true_bitmap = array_to_bitmap(a, n, N_WORDS);
 
+    /* [SN-2023-03-06] Step 2: Convert the array to BPF filters */
     filter_t *f = allowed_to_filters(a, n, 99);
-    __u32 *extracted_bitmap = bpf_to_bitmap(f, N_WORDS);
-    /* [SN-2023-03-06] Compare two bitmaps */
+    /* [SN-2023-03-06] Step 3: Analyze BPF fillters to extract bitmap */
+    __u32 *extracted_bitmap = bpf_to_bitmap(f, N_WORDS, 2 * n + 3);
+
+    /* [SN-2023-03-06] Step 4: Examine the bitmap by converting to array*/
+    int extracted_bitmap_size = bitmap_length(extracted_bitmap, N_WORDS);
+    int *arr = calloc(extracted_bitmap_size, sizeof(int));
+    bitmap_to_array(extracted_bitmap, N_WORDS, arr);
+
+    printf("True bitmap: \t\t");
+    for (int i = 0; i < n; i++)
+        printf("%d ", arr[i]);
+    printf("\n");
+    printf("Extracted bitmap: \t");
+    for (int i = 0; i < n; i++)
+        printf("%d ", arr[i]);
+    printf("\n");
+    free(arr);
+
+    /* [SN-2023-03-06] Step 5: without knowing n, we can still compare two bitmaps */
     for (int i = 0; i < N_WORDS; i++)
     {
         if (true_bitmap[i] != extracted_bitmap[i])
@@ -137,7 +156,7 @@ int main(void)
     // no_block_test();
     // strict_test();
     // basic_filter_test();
-    avl_filter_test();
-    // bpf_to_bitmap_test();
+    // avl_filter_test();
+    bpf_to_bitmap_test();
     return 0;
 }

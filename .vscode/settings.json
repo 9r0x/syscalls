@@ -4,6 +4,19 @@
     "uthread_ctx.h": "c",
     "syscall.h": "c",
     "functional": "c",
-    "filter.h": "c"
+    "filter.h": "c",
+    "unistd.h": "c",
+    "unistd_32.h": "c",
+    "unistd_64.h": "c",
+    "*.tcc": "c",
+    "chrono": "c",
+    "string_view": "c",
+    "random": "c",
+    "istream": "c",
+    "limits": "c",
+    "numeric": "c",
+    "valarray": "c",
+    "algorithm": "c",
+    "*.inc": "c"
   }
 }

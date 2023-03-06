@@ -1,30 +1,5 @@
-#include <linux/seccomp.h>
-#include <linux/filter.h>
-#include <linux/audit.h>
-#include <sys/syscall.h>
-#include <stdlib.h>
-#include <unistd.h>
-#include <stdio.h>
-#include <stddef.h>
-#include <errno.h>
-
 #include "filter.h"
-
-#define syscall_nr (offsetof(struct seccomp_data, nr))
-#define arch_nr (offsetof(struct seccomp_data, arch))
-
-#define VALIDATE_ARCHITECTURE                                         \
-    BPF_STMT(BPF_LD | BPF_W | BPF_ABS, arch_nr),                      \
-        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, AUDIT_ARCH_X86_64, 1, 0), \
-        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_KILL)
-
-#define EXAMINE_SYSCALL \
-    BPF_STMT(BPF_LD | BPF_W | BPF_ABS, syscall_nr)
-
-#define BLOCK_SYSCALL(nr)                                                          \
-    BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, nr, 0, 1),                                 \
-        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | (error & SECCOMP_RET_DATA)), \
-        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW)
+#include "queue.h"
 
 void install_basic_filters(int nr, int error)
 {
@@ -62,11 +37,12 @@ int *bitmap_to_array(__u32 *bitmap, int n_words, int *allowed)
     return allowed;
 }
 
+#define BITMAP_SET(bitmap, i) (bitmap[(i) / BITS_PER_U32] |= 1 << ((i) % BITS_PER_U32))
 __u32 *array_to_bitmap(int *allowed, int n, int n_words)
 {
     __u32 *bitmap = calloc(n_words, sizeof(__u32));
     for (int i = 0; i < n; i++)
-        bitmap[allowed[i] / BITS_PER_U32] |= 1 << (allowed[i] % BITS_PER_U32);
+        BITMAP_SET(bitmap, allowed[i]);
     return bitmap;
 }
 
@@ -153,7 +129,7 @@ void allowed_to_filters_helper(int arr[], int start, int end, filter_t *filters,
 #define N_PREINSTRUCTIONS 1
 filter_t *allowed_to_filters(int allowed[], int n, int error)
 {
-    filter_t *filters = malloc(sizeof(filter_t) * (2 * n + 1));
+    filter_t *filters;
     int index = 0;
     filters = (filter_t *)malloc(sizeof(filter_t) * (n * 2 + N_PREINSTRUCTIONS + 2));
     filters[0] = (filter_t)BPF_STMT(BPF_LD | BPF_W | BPF_ABS, syscall_nr);
@@ -212,8 +188,142 @@ void install_avl_filter(__u32 *allowed_bitmap, int n_words, int error)
     free(allowed);
 }
 
-__u32 *bpf_to_bitmap(filter_t *filters, int n_words)
+void analyze_range(range_t *range, __u32 *b, queue_t *q)
+{
+    /* [SN-2023-03-06] In comparison, high is the right boundary of the less range */
+    /* [SN-2023-03-06] low is the left boundary of the greater range */
+    /* [SN-2023-03-06] K can be included in either or none of the ranges */
+    int high, low;
+    /* [SN-2023-03-06] if RET_ALLOW, set all bits in range */
+    if (range->filters[0].code == (BPF_RET | BPF_K) && range->filters[0].k == SECCOMP_RET_ALLOW)
+    {
+        for (int i = range->low; i <= range->high; i++)
+            BITMAP_SET(b, i);
+        return;
+    }
+
+    /* [SN-2023-03-06] For other RET instructions, clear bit(do nothing) */
+    else if (range->filters[0].code == (BPF_RET | BPF_K))
+        return;
+    else
+    {
+        switch (range->filters[0].code)
+        {
+        case BPF_JMP | BPF_JGT | BPF_K:
+            // Greater
+            high = MIN(range->filters[0].k, range->high);
+            low = MAX(range->filters[0].k + 1, range->low);
+            if (low <= range->high)
+            {
+                range_t *greater_range = (range_t *)malloc(sizeof(range_t));
+                greater_range->low = low;
+                greater_range->high = range->high;
+                greater_range->filters = range->filters + range->filters[0].jt + 1;
+                enqueue(q, greater_range);
+            }
+            // Equal or less
+            if (high >= range->low)
+            {
+                range_t *equal_or_less_range = (range_t *)malloc(sizeof(range_t));
+                equal_or_less_range->low = range->low;
+                equal_or_less_range->high = high;
+                equal_or_less_range->filters = range->filters + range->filters[0].jf + 1;
+                enqueue(q, equal_or_less_range);
+            }
+
+            break;
+        case BPF_JMP | BPF_JGE | BPF_K:
+            low = MAX(range->filters[0].k, range->low);
+            high = MIN(range->filters[0].k - 1, range->high);
+            // Greater or equal
+            if (low <= range->high)
+            {
+                range_t *greater_or_equal_range = (range_t *)malloc(sizeof(range_t));
+                greater_or_equal_range->low = low;
+                greater_or_equal_range->high = range->high;
+                greater_or_equal_range->filters = range->filters + range->filters[0].jt + 1;
+                enqueue(q, greater_or_equal_range);
+            }
+            // Less
+            if (high >= range->low)
+            {
+                range_t *less_range = (range_t *)malloc(sizeof(range_t));
+                less_range->low = range->low;
+                less_range->high = high;
+                less_range->filters = range->filters + range->filters[0].jf + 1;
+                enqueue(q, less_range);
+            }
+            break;
+        case BPF_JMP | BPF_JEQ | BPF_K:
+            low = MAX(range->filters[0].k + 1, range->low);
+            high = MIN(range->filters[0].k - 1, range->high);
+            // Equal
+            if (range->filters[0].k >= range->low && range->filters[0].k <= range->high)
+            {
+                range_t *equal_range = (range_t *)malloc(sizeof(range_t));
+                equal_range->low = range->filters[0].k;
+                equal_range->high = range->filters[0].k;
+                equal_range->filters = range->filters + range->filters[0].jt + 1;
+                enqueue(q, equal_range);
+            }
+            // Greater
+            if (low <= range->high)
+            {
+                range_t *greater_range = (range_t *)malloc(sizeof(range_t));
+                greater_range->low = low;
+                greater_range->high = range->high;
+                greater_range->filters = range->filters + range->filters[0].jf + 1;
+                enqueue(q, greater_range);
+            }
+            // Less
+            if (high >= range->low)
+            {
+                range_t *less_range = (range_t *)malloc(sizeof(range_t));
+                less_range->low = range->low;
+                less_range->high = high;
+                less_range->filters = range->filters + range->filters[0].jf + 1;
+                enqueue(q, less_range);
+            }
+            break;
+        /* [SN-2023-03-06] If not a constant valued comparison JMP, exit */
+        default:
+            printf(">>Not a constant-valued comparison JMP\n");
+            exit(1);
+        }
+    }
+}
+
+#define __NR_syscall_max 440
+__u32 *bpf_to_bitmap(filter_t *filters, int n_words, int m)
 {
     __u32 *bitmap = calloc(n_words, sizeof(__u32));
+
+    /* [SN-2023-03-06] Assuming first line is BPF_STMT(BPF_LD | BPF_W | BPF_ABS, syscall_nr) */
+    /* [SN-2023-03-06] Otherwise, we can't optimize due to potential jumps and dynamic comparison*/
+    /* [SN-2023-03-06] TODO implement a more specific check for 8 Classes of instructions*/
+    if (filters[0].code != (BPF_LD | BPF_W | BPF_ABS) || filters[0].k != syscall_nr)
+    {
+        printf(">>First instruction must load syscall nr\n");
+        exit(1);
+    }
+
+    /* [SN-2023-03-06] Left and right inclusive */
+    queue_t *q = (queue_t *)malloc(sizeof(queue_t));
+    initialize(q);
+
+    range_t *range = (range_t *)malloc(sizeof(range_t));
+    range->low = 0;
+    range->high = __NR_syscall_max;
+    range->filters = filters + 1;
+
+    enqueue(q, range);
+    while (!is_empty(q))
+    {
+        range_t *range = dequeue(q);
+        analyze_range(range, bitmap, q);
+        free(range);
+    }
+
+    free(q);
     return bitmap;
 }

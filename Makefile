@@ -1,7 +1,7 @@
 SHELL		= /bin/sh
 
 TARGET		= libfilter.so
-OFILES		= filter.o
+OFILES		= filter.o queue.o
 
 EXECS		= test.o
 CC			= cc
