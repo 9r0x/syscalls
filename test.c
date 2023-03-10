@@ -16,7 +16,8 @@ void no_block_test(void)
 {
     printf("\nTest 1: no filter\n");
     /* [SN-2023-02-22] _NR is Numeric Reference */
-    syscall(SYS_write, 1, "Write 1\tallowed\n", 16);
+    /* [SN-2023-03-10] Extra arguments are ignored */
+    syscall(SYS_write, 1, "Write 1\tallowed\n", 16, 506, "NONONO", (int *)0x12345678);
     syscall(__NR_write, 1, "Write 2\tallowed\n", 16);
 }
 
@@ -151,12 +152,51 @@ void bpf_to_bitmap_test(void)
     printf("Bitmaps are the same");
 }
 
+void arity_filter_test(void)
+{
+    struct utsname *buf = malloc(sizeof(struct utsname));
+    printf("\nTest 6: arity filter\n");
+
+    /* [SN-2023-03-10] Before the filter is installed */
+    syscall(SYS_uname, buf);
+    if (errno != eno)
+        printf("Uname(63)\tallowed: %s - %s\n", buf->sysname, buf->version);
+    else
+        printf("Uname(63)\tblocked\n");
+
+    install_arity_filters(__NR_uname, 1, eno);
+    printf(">Filters installed\n");
+
+    /* [SN-2023-03-10] After the filter is installed */
+    syscall(SYS_uname, buf, 0, 0, 0, 0, 0);
+    if (errno != eno)
+        printf("Uname(63)\tallowed: %s - %s\n", buf->sysname, buf->version);
+    else
+        printf("Uname(63)\tblocked\n");
+
+    /* [SN-2023-03-10] ERROR: the excessive args will also be copied to seccomp_data? */
+    /* [SN-2023-03-10] Unless we set it to 0, we can't tell excessive args from memory junks */
+    /* [SN-2023-03-10] Wrapper prevents misuse */
+    /* [SN-2023-03-10] Without wrapper, impossible to tell if arity is right */
+    syscall(SYS_uname, buf);
+    if (errno != eno)
+        printf("Uname(63)\tallowed: %s - %s\n", buf->sysname, buf->version);
+    else
+        printf("Uname(63)\tblocked\n");
+
+    printf("\n");
+}
+
 int main(void)
 {
-    // no_block_test();
+    /* [SN-2023-03-10] Fail to pass extra arguments in wrapper */
+    // write(1, "Hello, world", 12, 506, "NONONO", (int *)0x12345678);
+    write(1, "Hello, world", 12);
+    no_block_test();
     // strict_test();
     // basic_filter_test();
     // avl_filter_test();
-    bpf_to_bitmap_test();
+    // bpf_to_bitmap_test();
+    arity_filter_test();
     return 0;
 }

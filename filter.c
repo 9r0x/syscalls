@@ -327,3 +327,55 @@ __u32 *bpf_to_bitmap(filter_t *filters, int n_words, int m)
     free(q);
     return bitmap;
 }
+
+#define MAX_ARITY 6
+#define N_INSTRUCTIONS_PER_ARG 6
+#define N_ARITY_FILTERS (6 + (MAX_ARITY - argc) * N_INSTRUCTIONS_PER_ARG + 2 + 1)
+
+void install_arity_filters(int nr, int argc, int error)
+{
+    int i;
+    struct sock_fprog prog;
+    struct sock_filter *filters = malloc(sizeof(struct sock_filter) * N_ARITY_FILTERS);
+    filters[0] = (filter_t)BPF_STMT(BPF_LD | BPF_W | BPF_ABS, arch_nr);
+    filters[1] = (filter_t)BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, AUDIT_ARCH_X86_64, 1, 0);
+    filters[2] = (filter_t)BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_KILL);
+    filters[3] = (filter_t)BPF_STMT(BPF_LD | BPF_W | BPF_ABS, syscall_nr);
+    /* [SN-2023-03-10] In practice, the unmatched should be blocked instead of allowed! */
+    filters[4] = (filter_t)BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, nr, 0,
+                                    (6 + (MAX_ARITY - argc) * N_INSTRUCTIONS_PER_ARG + 1) - 4 - 1);
+    /* [SN-2023-03-10] Initialize 0 -> A for Or-ing */
+    filters[5] = (filter_t)BPF_STMT(BPF_LD | BPF_W | BPF_IMM, 0);
+
+    /* [SN-2023-03-10] Loop through the non-used args */
+    for (i = 0; i < MAX_ARITY - argc; i++)
+    {
+        /* [SN-2023-03-10] A -> X because we can only load ABS -> A */
+        filters[6 + i * N_INSTRUCTIONS_PER_ARG] = (filter_t)BPF_STMT(BPF_MISC | BPF_TAX, 0);
+        /* [SN-2023-03-10] High 32 bits -> A */
+        filters[6 + i * N_INSTRUCTIONS_PER_ARG + 1] = (filter_t)BPF_STMT(BPF_LD | BPF_W | BPF_ABS, arg_nr(i + argc));
+        /* [SN-2023-03-10] OR(A, X) -> A */
+        filters[6 + i * N_INSTRUCTIONS_PER_ARG + 2] = (filter_t)BPF_STMT(BPF_ALU | BPF_OR | BPF_X, 0);
+        /* [SN-2023-03-10] A -> X because we can only load ABS -> A */
+        filters[6 + i * N_INSTRUCTIONS_PER_ARG + 3] = (filter_t)BPF_STMT(BPF_MISC | BPF_TAX, 0);
+        /* [SN-2023-03-10] Low 32 bits -> A */
+        filters[6 + i * N_INSTRUCTIONS_PER_ARG + 4] = (filter_t)BPF_STMT(BPF_LD | BPF_W | BPF_ABS, arg_nr(i + argc) + sizeof(__u64) / 2);
+        /* [SN-2023-03-10] OR(A, X) -> A */
+        filters[6 + i * N_INSTRUCTIONS_PER_ARG + 5] = (filter_t)BPF_STMT(BPF_ALU | BPF_OR | BPF_X, 0);
+    }
+
+    /* [SN-2023-03-10] Check if any of the args are non-zero */
+    filters[6 + (MAX_ARITY - argc) * N_INSTRUCTIONS_PER_ARG] = (filter_t)BPF_JUMP(BPF_JMP | BPF_JGT | BPF_K, 0, 1, 0);
+    filters[6 + (MAX_ARITY - argc) * N_INSTRUCTIONS_PER_ARG + 1] = (filter_t)BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW);
+    filters[6 + (MAX_ARITY - argc) * N_INSTRUCTIONS_PER_ARG + 2] = (filter_t)BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | (error & SECCOMP_RET_DATA));
+
+    prog = (struct sock_fprog){
+        .len = N_ARITY_FILTERS,
+        .filter = filters,
+    };
+    if (syscall(SYS_seccomp, SECCOMP_SET_MODE_FILTER, 0, &prog) != 0)
+    {
+        perror("Seccomp error");
+        exit(1);
+    }
+}

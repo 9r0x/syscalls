@@ -10,10 +10,13 @@
 #include <stdio.h>
 #include <stddef.h>
 #include <errno.h>
+#include <assert.h>
+
 typedef struct sock_filter filter_t;
 #define BITS_PER_U32 (sizeof(__u32) * 8)
 
 void install_basic_filters(int nr, int error);
+void install_arity_filters(int nr, int argc, int error);
 __u32 *array_to_bitmap(int *allowed, int n, int n_words);
 void install_avl_filter(__u32 *allowed_bitmap, int n_words, int error);
 filter_t *allowed_to_filters(int allowed[], int n, int error);
@@ -30,6 +33,7 @@ typedef struct range
 
 #define syscall_nr (offsetof(struct seccomp_data, nr))
 #define arch_nr (offsetof(struct seccomp_data, arch))
+#define arg_nr(n) (offsetof(struct seccomp_data, args) + sizeof(__u64) * (n))
 
 #define VALIDATE_ARCHITECTURE                                         \
     BPF_STMT(BPF_LD | BPF_W | BPF_ABS, arch_nr),                      \
